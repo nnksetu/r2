@@ -1,6 +1,10 @@
 export default {
   async fetch(request, env) {
     let url = new URL(request.url);
+
+    if (url.pathname === '/favicon.ico') {
+      return new Response(null, { status: 204 });
+    }
     
     if (url.pathname.startsWith('/')) {
       // 1. 替换为你的 R2 存储桶公共域名
