@@ -12,7 +12,7 @@ export default {
       '/setu_pic',
       '/setu',
       '/zrsetu_pic',
-      '/zrsetu'.
+      '/zrsetu',
       '/acg_pic',
     ];
 
