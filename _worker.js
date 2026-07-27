@@ -2,36 +2,54 @@ export default {
   async fetch(request, env) {
     let url = new URL(request.url);
 
+    // 1. 处理 favicon
     if (url.pathname === '/favicon.ico') {
       return new Response(null, { status: 204 });
     }
-    
-    if (url.pathname.startsWith('/')) {
-      // 1. 替换为你的 R2 存储桶公共域名
-      url.hostname = 'pub-eb56c075642a4c229a1ca8eb4b4ecb31.r2.dev';
-      
-      // 2. 深度克隆请求头，并删掉 host，防止内部环路报错
-      let newHeaders = new Headers(request.headers);
-      newHeaders.delete("host");
-      
-      // 3. 这里的 fetch 只负责去 R2 发起连接，不直接下载整个文件到内存
-      let response = await fetch(url, {
-        method: request.method,
-        headers: newHeaders,
-        redirect: "follow"
-      });
 
-      // 4. 【核心改动：流式返回】
-      // 提取 response.body（它是一个 ReadableStream 数据流）直接返回。
-      // 这样 Cloudflare 就会像自来水管一样，从 R2 读多少，就立刻传给用户多少，
-      // 内存里永远只占几 KB，彻底绕过 128MB 的内存限制。
-      return new Response(response.body, {
-        status: response.status,
-        statusText: response.statusText,
-        headers: response.headers
+    // 2. 预设允许访问的前缀白名单
+    const allowedPrefixes = [
+      '/setu_pic',
+      '/setu',
+      '/zrsetu_pic',
+      '/zrsetu'
+    ];
+
+    // 3. 拦截显式禁止的 zip 路径（双重保险）
+    const isZipPath = url.pathname.startsWith('/setu_zip') || url.pathname.startsWith('/zrsetu_zip');
+
+    // 4. 检查是否符合允许条件：必须在前缀白名单中，且不能是 zip 路径
+    const isAllowed = allowedPrefixes.some(prefix => url.pathname.startsWith(prefix)) && !isZipPath;
+
+    // 如果不在白名单内，直接拒之门外
+    if (!isAllowed) {
+      return new Response('Access Denied: This path is not allowed via this route.', { 
+        status: 403,
+        headers: { 'Content-Type': 'text/plain; charset=utf-8' }
       });
     }
+
+    // --- 以下是原本的 R2 代理逻辑 ---
+
+    // 替换为你的 R2 存储桶公共域名
+    url.hostname = 'pub-eb56c075642a4c229a1ca8eb4b4ecb31.r2.dev';
     
-    return env.ASSETS.fetch(request);
+    // 深度克隆请求头，并删掉 host，防止内部环路报错
+    let newHeaders = new Headers(request.headers);
+    newHeaders.delete("host");
+    
+    // 发起 R2 请求
+    let response = await fetch(url.toString(), {
+      method: request.method,
+      headers: newHeaders,
+      redirect: "follow"
+    });
+
+    // 流式返回数据
+    return new Response(response.body, {
+      status: response.status,
+      statusText: response.statusText,
+      headers: response.headers
+    });
   },
 };
