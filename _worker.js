@@ -13,6 +13,7 @@ export default {
       '/setu',
       '/zrsetu_pic',
       '/zrsetu'
+      '/acg'
     ];
 
     // 3. 拦截显式禁止的 zip 路径（双重保险）
