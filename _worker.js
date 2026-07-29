@@ -14,6 +14,7 @@ export default {
       '/zrsetu_pic',
       '/zrsetu',
       '/acg_pic',
+      '/ping.txt',
     ];
 
     // 3. 拦截显式禁止的 zip 路径（双重保险）
