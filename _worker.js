@@ -22,13 +22,12 @@ export default {
       '/ping.txt',
     ];
 
-    // 4. 拦截显式禁止的 zip 路径（双重保险）
+    // 4. 拦截显式禁止的 zip 路径
     const isZipPath = url.pathname.startsWith('/setu_zip') || url.pathname.startsWith('/zrsetu_zip');
 
-    // 5. 检查是否符合允许条件：必须在前缀白名单中，且不能是 zip 路径
+    // 5. 校验白名单
     const isAllowed = allowedPrefixes.some(prefix => url.pathname.startsWith(prefix)) && !isZipPath;
 
-    // 如果不在白名单内，直接拦截
     if (!isAllowed) {
       return new Response('Access Denied: This path is not allowed via this route.', { 
         status: 403,
@@ -36,44 +35,45 @@ export default {
       });
     }
 
-    // --- R2 原生内网读取逻辑 ---
-
-    // 6. 提取 R2 中的文件路径 Key（去掉开头的斜杠并解码）
+    // 6. 提取 R2 文件 Key
     const key = decodeURIComponent(url.pathname.slice(1));
 
     try {
-      // 7. 处理 Range 请求头（支持视频/音频拖拽分段加载）
-      const options = {};
-      const rangeHeader = request.headers.get('range');
-      if (rangeHeader) {
-        options.range = request.headers;
-      }
+      // 7. 【关键修正】直接将原始 Request 对象或 Range 传递给 R2 API
+      const range = request.headers.get('range');
+      const object = await env.MY_BUCKET.get(key, {
+        range: range ? request.headers : undefined,
+        onlyIf: request.headers,
+      });
 
-      // 8. 通过原生绑定直接从 R2 获取文件（走内网）
-      const object = await env.MY_BUCKET.get(key, options);
-
-      // 文件不存在
       if (!object) {
         return new Response('404 Not Found', { status: 404 });
       }
 
-      // 9. 构建 HTTP 响应头
+      // 8. 构建标准的视频流响应头
       const headers = new Headers();
       
-      // 写入 R2 保存的元数据（如 Content-Type 等）
+      // 写入 R2 绑定的 Content-Type, Content-Language 等元数据
       object.writeHttpMetadata(headers);
       headers.set('etag', object.httpEtag);
 
-      // 【核心改动】：明确禁掉浏览器与 CF 边缘节点的缓存
+      // 显式允许 Range 拖拽
+      headers.set('accept-ranges', 'bytes');
+
+      // 禁用缓存
       headers.set('cache-control', 'no-store, no-cache, must-revalidate, max-age=0');
 
-      // 支持跨域访问
+      // 允许跨域（视频跨域必须）
       headers.set('access-control-allow-origin', '*');
 
-      // 10. 状态码判定：有 Range 请求返回 206，否则返回 200
-      const status = object.body ? (rangeHeader ? 206 : 200) : 304;
+      // 【关键修正】写入 Range 具体的返回范围信息
+      if (object.range) {
+        headers.set('content-range', `bytes ${object.range.offset}-${object.range.offset + object.size - 1}/${object.size}`);
+      }
 
-      // 11. 零拷贝流式返回
+      // 确定状态码：只有 R2 真正返回了 range 切片时才给 206
+      const status = object.body ? (range ? 206 : 200) : 304;
+
       return new Response(object.body, {
         status,
         headers,
