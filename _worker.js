@@ -1,13 +1,18 @@
 export default {
   async fetch(request, env) {
-    let url = new URL(request.url);
+    const url = new URL(request.url);
 
     // 1. 处理 favicon
     if (url.pathname === '/favicon.ico') {
       return new Response(null, { status: 204 });
     }
 
-    // 2. 预设允许访问的前缀白名单
+    // 2. 只允许 GET 和 HEAD 请求
+    if (request.method !== 'GET' && request.method !== 'HEAD') {
+      return new Response('Method Not Allowed', { status: 405 });
+    }
+
+    // 3. 预设允许访问的前缀白名单
     const allowedPrefixes = [
       '/setu_pic',
       '/setu',
@@ -17,13 +22,13 @@ export default {
       '/ping.txt',
     ];
 
-    // 3. 拦截显式禁止的 zip 路径（双重保险）
+    // 4. 拦截显式禁止的 zip 路径（双重保险）
     const isZipPath = url.pathname.startsWith('/setu_zip') || url.pathname.startsWith('/zrsetu_zip');
 
-    // 4. 检查是否符合允许条件：必须在前缀白名单中，且不能是 zip 路径
+    // 5. 检查是否符合允许条件：必须在前缀白名单中，且不能是 zip 路径
     const isAllowed = allowedPrefixes.some(prefix => url.pathname.startsWith(prefix)) && !isZipPath;
 
-    // 如果不在白名单内，直接拒之门外
+    // 如果不在白名单内，直接拦截
     if (!isAllowed) {
       return new Response('Access Denied: This path is not allowed via this route.', { 
         status: 403,
@@ -31,27 +36,51 @@ export default {
       });
     }
 
-    // --- 以下是原本的 R2 代理逻辑 ---
+    // --- R2 原生内网读取逻辑 ---
 
-    // 替换为你的 R2 存储桶公共域名
-    url.hostname = 'pub-eb56c075642a4c229a1ca8eb4b4ecb31.r2.dev';
-    
-    // 深度克隆请求头，并删掉 host，防止内部环路报错
-    let newHeaders = new Headers(request.headers);
-    newHeaders.delete("host");
-    
-    // 发起 R2 请求
-    let response = await fetch(url.toString(), {
-      method: request.method,
-      headers: newHeaders,
-      redirect: "follow"
-    });
+    // 6. 提取 R2 中的文件路径 Key（去掉开头的斜杠并解码）
+    const key = decodeURIComponent(url.pathname.slice(1));
 
-    // 流式返回数据
-    return new Response(response.body, {
-      status: response.status,
-      statusText: response.statusText,
-      headers: response.headers
-    });
+    try {
+      // 7. 处理 Range 请求头（支持视频/音频拖拽分段加载）
+      const options = {};
+      const rangeHeader = request.headers.get('range');
+      if (rangeHeader) {
+        options.range = request.headers;
+      }
+
+      // 8. 通过原生绑定直接从 R2 获取文件（走内网）
+      const object = await env.MY_BUCKET.get(key, options);
+
+      // 文件不存在
+      if (!object) {
+        return new Response('404 Not Found', { status: 404 });
+      }
+
+      // 9. 构建 HTTP 响应头
+      const headers = new Headers();
+      
+      // 写入 R2 保存的元数据（如 Content-Type 等）
+      object.writeHttpMetadata(headers);
+      headers.set('etag', object.httpEtag);
+
+      // 【核心改动】：明确禁掉浏览器与 CF 边缘节点的缓存
+      headers.set('cache-control', 'no-store, no-cache, must-revalidate, max-age=0');
+
+      // 支持跨域访问
+      headers.set('access-control-allow-origin', '*');
+
+      // 10. 状态码判定：有 Range 请求返回 206，否则返回 200
+      const status = object.body ? (rangeHeader ? 206 : 200) : 304;
+
+      // 11. 零拷贝流式返回
+      return new Response(object.body, {
+        status,
+        headers,
+      });
+
+    } catch (err) {
+      return new Response(`Server Error: ${err.message}`, { status: 500 });
+    }
   },
 };
